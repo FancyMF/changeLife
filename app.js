@@ -55,7 +55,6 @@ function newRun() {
     status: 'active',
     answers: {},
     day: { entries: [], copiedAt: null },
-    milestones: [],
     board: { antiVision: '', vision: '', oneYear: '', oneMonth: '', levers: '', constraints: '' },
     review: { d1: null, d7: null, d30: null }
   };
@@ -129,12 +128,6 @@ function answeredCount(run) {
 function spansDays(run) {
   const end = run.finishedAt || Date.now();
   return Math.max(1, Math.ceil((end - run.startedAt) / 86400000));
-}
-
-function pendingCheck(run) {
-  const p = computeProgress(run);
-  const done = run.milestones || [];
-  return CHECKS.filter(c => p >= c.at && !done.some(m => m.at === c.at))[0] || null;
 }
 
 function applyPhase() {
@@ -274,6 +267,14 @@ function seq(act) {
   return [];
 }
 
+function nextStage(run) {
+  const left = ids => ids.filter(id => !hasAnswer(run, id)).length;
+  if (left(MORNING) > 0) return 'morning';
+  if (left(EVENING) === 0) return 'board';
+  if (EVENING.some(id => hasAnswer(run, id))) return 'evening';
+  return 'day';
+}
+
 function viewAct(id, act) {
   const run = getRun(id);
   if (!run) { go('/'); return; }
@@ -323,22 +324,9 @@ function viewAct(id, act) {
   if (ta && window.innerWidth > 700) ta.focus({ preventScroll: true });
 }
 
-function advanceAfterCheck() {
-  const run = getRun(mem.runId) || activeRun();
-  if (!run || !mem.afterCheck) return;
-  const mode = mem.afterCheck;
-  mem.afterCheck = null;
-  if (mode === 'finish') { doFinish(run); return; }
-  const list = seq(mem.act);
-  if (mem.i < list.length - 1) { mem.i++; viewAct(run.id, mem.act); }
-  else if (mem.act === 'morning') go('/run/' + run.id + '/day');
-  else go('/run/' + run.id + '/board');
-}
-
 function doFinish(run) {
   run.status = 'done';
   run.finishedAt = Date.now();
-  mem.afterCheck = null;
   save();
   go('/history/' + run.id);
 }
@@ -346,7 +334,6 @@ function doFinish(run) {
 function finishRun() {
   const run = activeRun();
   if (!run) return;
-  if (pendingCheck(run)) { mem.afterCheck = 'finish'; showCheck(run); return; }
   doFinish(run);
 }
 
@@ -398,6 +385,9 @@ function viewDay(run) {
     '<p class="hint" style="margin-top:0;font-size:12.5px">没有准时这回事。想到了就写一句。</p>' +
     frags +
     '<div class="list" style="margin-top:22px">' + list + '</div>' +
+    '<div class="row" style="margin-top:20px">' +
+    '<button class="btn ghost block" data-act="go" data-to="/run/' + run.id + '/evening">天黑了，去第三幕</button></div>' +
+    '<p class="tip">白天没有尽头。想到就回来写一句，累了就等晚上。</p>' +
     '</div>' +
     '<div class="composer"><div class="inner">' +
     '<div class="box">' +
@@ -437,23 +427,24 @@ function viewBoard(run) {
 
   let slots = '';
   fields.forEach(([k, lab]) => {
-    const v = (b[k] || '').trim();
     slots += '<div class="slot"><div class="lab">' + lab + '</div>' +
       '<textarea data-board="' + k + '" placeholder="还没写">' + esc(b[k]) + '</textarea></div>';
   });
 
+  const leftN = EVENING.filter(id => !hasAnswer(run, id)).length;
   const p = computeProgress(run);
-  const body = '<div class="top"><span class="t">结算</span><span class="r">' + (p >= 100 ? '完成' : '进行中') + '</span></div>' +
+  const body = '<div class="top"><span class="t">结算</span><span class="r">' + (leftN ? '晚上还差 ' + leftN + ' 题' : '可以收了') + '</span></div>' +
     '<div class="bar" style="margin:0 calc(var(--pad) * -1)"><i style="width:' + p + '%"></i></div>' +
     '<h1 class="q" style="font-size:22px;margin:20px 0 4px">这一局，你的面板。</h1>' +
     '<p class="hint" style="margin-top:8px;font-size:13px">六张卡已经按前面的答案填好了。改到你认它为止。</p>' +
+    (leftN ? '<div class="row" style="margin-top:16px"><button class="btn ghost block" data-act="go" data-to="/run/' + run.id + '/evening">先去补完晚上（' + leftN + ' 题）</button></div>' : '') +
     '<div class="board">' + slots + '</div>' +
     '<div class="row" style="margin-top:22px;gap:10px">' +
     '<button class="btn primary block" data-act="saveimg">保存图片</button></div>' +
     '<div class="row" style="margin-top:10px;gap:10px">' +
     '<button class="btn ghost block" data-act="copytext">复制文字</button>' +
     '<button class="btn ghost block" data-act="finish">结束这一天</button></div>' +
-    '<p class="tip">保存后会以图片形式给出。手机上长按图片即可存进相册，也可以设成锁屏。</p>';
+    '<p class="tip">保存后长按图片即可存进相册，也可以设成锁屏。结束这一天之后，它进历史，不再改动。</p>';
 
   layout(body, {});
 }
@@ -514,18 +505,6 @@ function viewDetail(id) {
     });
     if (!any) body += '<p class="tip">这一部分当时没有写。</p>';
   });
-
-  const ms = run.milestones || [];
-  if (ms.length) {
-    body += '<h2 style="font-size:13px;color:var(--fg3);letter-spacing:.12em;margin:34px 0 10px" class="mono">当时的路标</h2>';
-    ms.slice().sort((a, b) => a.at - b.at).forEach(m => {
-      const c = CHECKS.find(x => x.at === m.at);
-      const o = c && c.opts.find(x => x.verdict === m.verdict);
-      body += '<div class="cp"><span class="pct">' + m.at + '%</span><div class="body">' +
-        '<div class="qq">' + esc(c ? c.q : '') + '</div>' +
-        '<div class="aa">' + esc(o ? o.label : m.verdict) + (m.text ? ' — ' + esc(m.text) : '') + '</div></div></div>';
-    });
-  }
 
   body += '<div class="row" style="margin-top:30px">' +
     '<button class="btn ghost block" data-act="go" data-to="/history">返回</button></div>';
@@ -610,35 +589,6 @@ function closeLayer() {
   const l = document.getElementById('layer');
   l.classList.remove('on');
   l.innerHTML = '';
-}
-
-function showCheck(run) {
-  const c = pendingCheck(run);
-  if (!c) return false;
-  let refHTML = '';
-  if (c.ref && hasAnswer(run, c.ref)) {
-    refHTML = '<div class="ref" style="max-height:9em">' + esc(answerText(run, c.ref)) + '</div>';
-  }
-  const html = '<div class="tag">走过了 ' + c.at + '%</div>' +
-    '<h2>' + esc(c.q) + '</h2>' + refHTML +
-    '<div class="opts" data-at="' + c.at + '">' +
-    c.opts.map((o, i) => '<button class="opt" data-act="cpick" data-i="' + i + '" data-at="' + c.at + '">' + esc(o.label) + '</button>').join('') +
-    '</div>' +
-    (c.free ? '<textarea id="cpText" placeholder="写一句就够：什么时候，什么信号。" style="min-height:90px;font-size:15px"></textarea>' : '') +
-    '<div class="spacer"></div>' +
-    '<button class="btn ghost block" style="margin-top:20px" data-act="cskip" data-at="' + c.at + '">跳过这一步</button>';
-  openLayer(html);
-  return true;
-}
-
-function recordCheck(at, verdict, text) {
-  const run = activeRun() || getRun(mem.runId);
-  if (!run) return;
-  run.milestones = run.milestones || [];
-  if (!run.milestones.some(m => m.at === at)) {
-    run.milestones.push({ at: at, verdict: verdict, text: text || '', answeredAt: Date.now() });
-    save();
-  }
 }
 
 function maybeAskOnEntry() {
@@ -827,11 +777,7 @@ document.addEventListener('click', e => {
   if (act === 'resume') {
     const run = activeRun();
     if (!run) { go('/start'); return; }
-    const p = computeProgress(run);
-    let to = '/run/' + run.id + '/morning';
-    if (p >= 92) to = '/run/' + run.id + '/board';
-    else if (p >= 50) to = '/run/' + run.id + '/day';
-    go(to);
+    go('/run/' + run.id + '/' + nextStage(run));
     return;
   }
 
@@ -843,7 +789,6 @@ document.addEventListener('click', e => {
     const ta = document.querySelector('textarea[data-qid]');
     if (ta) setAnswer(run, qid, ta.value);
     save();
-    if (showCheck(run)) { mem.afterCheck = 'next'; return; }
     if (mem.i < list.length - 1) {
       mem.i++;
       viewAct(run.id, mem.act);
@@ -862,38 +807,7 @@ document.addEventListener('click', e => {
     return;
   }
 
-  if (act === 'cpick') {
-    const at = Number(el.dataset.at);
-    const c = CHECKS.find(x => x.at === at);
-    const oi = Number(el.dataset.i);
-    const o = c.opts[oi];
-    const txt = document.getElementById('cpText');
-    recordCheck(at, o.verdict, txt ? txt.value : '');
-    const all = document.querySelectorAll('.opt');
-    all.forEach(x => x.classList.remove('sel'));
-    el.classList.add('sel');
-    const host = document.querySelector('.opts');
-    let note = host.parentNode.querySelector('.note');
-    if (!note) {
-      note = document.createElement('div');
-      note.className = 'note';
-      host.parentNode.insertBefore(note, host.nextSibling);
-    }
-    note.textContent = o.note || '记下了。';
-    const skip = document.querySelector('[data-act="cskip"]');
-    if (skip) skip.textContent = '继续';
-    if (skip) skip.dataset.act = 'closelayer';
-    return;
-  }
-
-  if (act === 'cskip') {
-    recordCheck(Number(el.dataset.at), 'skipped', '');
-    closeLayer();
-    advanceAfterCheck();
-    return;
-  }
-
-  if (act === 'closelayer') { closeLayer(); advanceAfterCheck(); return; }
+  if (act === 'closelayer') { closeLayer(); return; }
 
   if (act === 'pick') {
     mem.dayQid = el.dataset.qid;
@@ -917,7 +831,7 @@ document.addEventListener('click', e => {
     ta.value = '';
     mem.dayQid = null;
     save();
-    if (!showCheck(run)) viewDay(run);
+    viewDay(run);
     return;
   }
 
