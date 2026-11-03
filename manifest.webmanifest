@@ -1,0 +1,10 @@
+{
+  "name": "一天",
+  "short_name": "一天",
+  "description": "用一天重整你的整个人生。",
+  "start_url": "./",
+  "display": "standalone",
+  "background_color": "#0b0d12",
+  "theme_color": "#0b0d12",
+  "orientation": "portrait"
+}
