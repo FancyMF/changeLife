@@ -148,3 +148,20 @@ textarea::placeholder{color:var(--fg3)}
 
 .qfoot .btn.ghost{flex:0 0 auto;padding:0 18px}
 .home .row .mono{color:var(--fg2)}
+
+/* 全天汇总 / 导出 */
+.sech{display:flex;align-items:baseline;justify-content:space-between;gap:10px;
+  font:12px/1.6 var(--mono);letter-spacing:.14em;color:var(--fg3);
+  margin:30px 0 12px;padding-bottom:9px;border-bottom:1px solid var(--line)}
+.sech span{font-size:11px;letter-spacing:0;color:var(--fg3)}
+.sumcards{display:grid;grid-template-columns:1fr 1fr;gap:10px;margin-top:16px}
+.sumcard{background:var(--panel);border:1px solid var(--line);border-radius:12px;padding:13px 14px}
+.sumcard .lab{font:10.5px/1.6 var(--mono);letter-spacing:.12em;color:var(--fg3)}
+.sumcard .val{font:15px/1.8 var(--serif);margin-top:7px;white-space:pre-wrap}
+.sumcard .val.none{font-family:var(--sans);font-size:13px;color:var(--fg3)}
+.sumitem{padding:14px 0;border-bottom:1px solid var(--line)}
+.sumitem:last-child{border-bottom:none}
+.qline{display:flex;gap:10px;font-size:12.5px;line-height:1.75;color:var(--fg2)}
+.qline .tm{flex:0 0 40px;font:11px/1.9 var(--mono);color:var(--fg3)}
+.aline{font:15.5px/1.95 var(--serif);margin:7px 0 0 50px;white-space:pre-wrap;overflow-wrap:anywhere}
+@media (max-width:400px){.sumcards{grid-template-columns:1fr}.aline{margin-left:0}}

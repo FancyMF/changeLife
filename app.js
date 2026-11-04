@@ -38,9 +38,166 @@ function todayStr() {
   return d.getFullYear() + '-' + String(d.getMonth() + 1).padStart(2, '0') + '-' + String(d.getDate()).padStart(2, '0');
 }
 
-function runName(run) {
-  const list = db.runs.slice().sort((a, b) => a.startedAt - b.startedAt);
-  return '第 ' + (list.findIndex(r => r.id === run.id) + 1) + ' 次';
+function dateLabel(ts) {
+  const d = new Date(ts);
+  return d.getFullYear() + '.' + String(d.getMonth() + 1).padStart(2, '0') + '.' + String(d.getDate()).padStart(2, '0');
+}
+
+function timeLabel(ts) {
+  const d = new Date(ts);
+  return String(d.getHours()).padStart(2, '0') + ':' + String(d.getMinutes()).padStart(2, '0');
+}
+
+function runName(run) { return dateLabel(run.startedAt); }
+
+function qText(run, qid) {
+  let q = Q[qid].q;
+  if (q.indexOf('{{V2}}') > -1) {
+    const v = answerText(run, 'V2').trim();
+    q = v ? q.replace('{{V2}}', v) : q.replace('「{{V2}}」', '那个身份');
+  }
+  return q;
+}
+
+const CARD_FIELDS = [
+  ['antiVision', '赌注 · 反愿景'],
+  ['vision', '获胜 · 愿景'],
+  ['oneYear', '主线 · 一年'],
+  ['oneMonth', '首领 · 一月'],
+  ['levers', '任务 · 明天'],
+  ['constraints', '规则 · 不牺牲的']
+];
+
+function collectRun(run) {
+  const b = run.board || {};
+  const acts = [
+    { title: '第一幕 · 早晨', rows: MORNING.filter(id => hasAnswer(run, id))
+        .map(id => ({ q: qText(run, id), a: answerText(run, id).trim() })) },
+    { title: '第二幕 · 白天', rows: ((run.day && run.day.entries) || []).slice()
+        .sort((x, y) => x.createdAt - y.createdAt)
+        .map(e => ({ q: e.qid ? qText(run, e.qid) : '自由记录', a: e.text, time: timeLabel(e.createdAt) })) },
+    { title: '第三幕 · 晚上', rows: EVENING.filter(id => hasAnswer(run, id))
+        .map(id => ({ q: qText(run, id), a: answerText(run, id).trim() })) }
+  ];
+  const cards = CARD_FIELDS.map(([k, lab]) => ({ lab: lab, v: (b[k] || '').trim() }));
+  return {
+    date: dateLabel(run.startedAt),
+    started: timeLabel(run.startedAt),
+    finished: run.finishedAt ? timeLabel(run.finishedAt) : '',
+    status: run.status === 'done' ? '已完成' : '进行中',
+    count: answeredCount(run),
+    acts: acts, cards: cards
+  };
+}
+
+function summaryHTML(data, withCards) {
+  let h = '<div class="sum">';
+  if (withCards) {
+    h += '<div class="sumcards">' + data.cards.map(c =>
+      '<div class="sumcard"><div class="lab">' + esc(c.lab) + '</div>' +
+      '<div class="val' + (c.v ? '' : ' none') + '">' +
+      (c.v ? esc(c.v).replace(/\n/g, '<br>') : '没写') + '</div></div>').join('') + '</div>';
+  }
+  data.acts.forEach(a => {
+    h += '<h2 class="sech">' + esc(a.title) + '<span>' + a.rows.length + ' 条</span></h2>';
+    if (!a.rows.length) { h += '<p class="tip">这一部分当时没有写。</p>'; return; }
+    h += a.rows.map((r, i) => '<div class="sumitem">' +
+      '<div class="qline"><span class="tm">' + (r.time || (i + 1)) + '</span>' + esc(r.q) + '</div>' +
+      '<div class="aline">' + esc(r.a).replace(/\n/g, '<br>') + '</div></div>').join('');
+  });
+  return h + '</div>';
+}
+
+function runMarkdown(run) {
+  const d = collectRun(run);
+  const L = ['# 一天 · ' + d.date, '',
+    '> 开始 ' + d.started + (d.finished ? ' · 结束 ' + d.finished : '') +
+    ' · ' + d.status + ' · 已答 ' + d.count + ' / 31', '',
+    '## 带走的六张卡', ''];
+  d.cards.forEach(c => { L.push('**' + c.lab + '**', '', c.v || '（没写）', ''); });
+  L.push('---', '');
+  d.acts.forEach(a => {
+    L.push('## ' + a.title + '（' + a.rows.length + ' 条）', '');
+    if (!a.rows.length) { L.push('这一部分当时没有写。', ''); return; }
+    a.rows.forEach((r, i) => { L.push('### ' + (r.time || (i + 1)) + '　' + r.q, '', r.a, ''); });
+  });
+  return L.join('\n');
+}
+
+function runPlainText(run) {
+  const d = collectRun(run);
+  const L = ['一天 · ' + d.date,
+    '开始 ' + d.started + (d.finished ? ' · 结束 ' + d.finished : '') +
+    ' · ' + d.status + ' · 已答 ' + d.count + ' / 31', '', '【带走的六张卡】', ''];
+  d.cards.forEach(c => { L.push(c.lab + '：' + (c.v || '（没写）')); });
+  L.push('', '────────────────────', '');
+  d.acts.forEach(a => {
+    L.push('【' + a.title + '】' + a.rows.length + ' 条', '');
+    if (!a.rows.length) { L.push('这一部分当时没有写。', ''); return; }
+    a.rows.forEach((r, i) => { L.push((r.time || (i + 1)) + '  ' + r.q, r.a, ''); });
+  });
+  return '\ufeff' + L.join('\r\n');
+}
+
+const ARCHIVE_CSS = `
+:root{color-scheme:light}
+*{box-sizing:border-box}
+body{margin:0;padding:0 20px 80px;background:#faf9f6;color:#23211e;
+  font:15px/1.85 -apple-system,BlinkMacSystemFont,"PingFang SC","Microsoft YaHei",sans-serif}
+.run{max-width:720px;margin:0 auto;padding:40px 0}
+h1{font:400 30px/1.4 Georgia,"Songti SC",serif;margin:0}
+.meta{color:#8a857c;font-size:13px;margin:6px 0 34px}
+h2{font-size:13px;letter-spacing:.14em;color:#8a857c;font-weight:500;margin:38px 0 14px;
+  border-bottom:1px solid #e5e1d8;padding-bottom:8px}
+h2 .n{float:right;letter-spacing:0}
+.cards,.sumcards{display:grid;grid-template-columns:1fr 1fr;gap:12px}
+.card,.sumcard{background:#fff;border:1px solid #e5e1d8;border-radius:10px;padding:14px 16px}
+.lab{font-size:12px;color:#8a857c;margin-bottom:6px}
+.val,.a{font:16px/1.9 Georgia,"Songti SC",serif;white-space:pre-wrap}
+.item,.sumitem{padding:16px 0;border-bottom:1px solid #ece8df}
+.q,.qline{font-size:13px;color:#6d6860;line-height:1.7}
+.tm{display:inline-block;font:12px ui-monospace,monospace;color:#a49e92;margin-right:10px;min-width:44px}
+.a{margin-top:8px}
+.none{color:#a49e92;font-size:13px}
+.toolbar{max-width:720px;margin:0 auto;padding:18px 0 0;display:flex;gap:12px;align-items:center;flex-wrap:wrap}
+.toolbar button{background:#23211e;color:#faf9f6;border:0;border-radius:8px;padding:9px 16px;font-size:13px;cursor:pointer}
+.toolbar span{color:#a49e92;font-size:12px}
+@media(max-width:520px){.cards,.sumcards{grid-template-columns:1fr}}
+@media print{
+  body{background:#fff;padding:0}
+  .toolbar{display:none}
+  .run{padding:0}
+  .run + .run{page-break-before:always}
+  .item,.sumitem,.card,.sumcard{page-break-inside:avoid}
+  @page{margin:18mm 16mm}
+}`;
+
+function archiveHTML(runs) {
+  const all = runs.map(collectRun);
+  const title = runs.length > 1 ? '一天 · 全部记录（' + runs.length + ' 次）' : '一天 · ' + all[0].date;
+  let body = '';
+  all.forEach(d => {
+    body += '<section class="run"><h1>' + esc(d.date) + '</h1>' +
+      '<p class="meta">开始 ' + d.started + (d.finished ? ' · 结束 ' + d.finished : '') +
+      ' · ' + d.status + ' · 已答 ' + d.count + ' / 31</p>' +
+      '<h2>带走的六张卡</h2><div class="cards">' +
+      d.cards.map(c => '<div class="card"><div class="lab">' + esc(c.lab) + '</div>' +
+        '<div class="val' + (c.v ? '' : ' none') + '">' + (c.v ? esc(c.v) : '—') + '</div></div>').join('') +
+      '</div>';
+    d.acts.forEach(a => {
+      body += '<h2>' + esc(a.title) + '<span class="n">' + a.rows.length + ' 条</span></h2>';
+      if (!a.rows.length) { body += '<p class="none">这一部分当时没有写。</p>'; return; }
+      body += a.rows.map((r, i) => '<div class="item"><div class="q"><span class="tm">' +
+        (r.time || (i + 1)) + '</span>' + esc(r.q) + '</div><div class="a">' + esc(r.a) + '</div></div>').join('');
+    });
+    body += '</section>';
+  });
+  return '<!DOCTYPE html>\n<html lang="zh-CN">\n<head>\n<meta charset="utf-8">\n' +
+    '<meta name="viewport" content="width=device-width,initial-scale=1">\n' +
+    '<title>' + esc(title) + '</title>\n<style>' + ARCHIVE_CSS + '</style>\n</head>\n<body>\n' +
+    '<div class="toolbar"><button onclick="window.print()">打印 / 存为 PDF</button>' +
+    '<span>独立文件，不联网、不上传。可用浏览器打印成 PDF。</span></div>\n' +
+    body + '\n</body>\n</html>';
 }
 
 function activeRun() {
@@ -416,35 +573,37 @@ function viewBoard(run) {
   });
   if (changed) save();
 
-  const fields = [
-    ['antiVision', '赌注 · 反愿景'],
-    ['vision', '获胜 · 愿景'],
-    ['oneYear', '主线 · 一年'],
-    ['oneMonth', '首领 · 一月'],
-    ['levers', '任务 · 明天'],
-    ['constraints', '规则 · 不牺牲的']
-  ];
-
   let slots = '';
-  fields.forEach(([k, lab]) => {
+  CARD_FIELDS.forEach(([k, lab]) => {
     slots += '<div class="slot"><div class="lab">' + lab + '</div>' +
       '<textarea data-board="' + k + '" placeholder="还没写">' + esc(b[k]) + '</textarea></div>';
   });
 
   const leftN = EVENING.filter(id => !hasAnswer(run, id)).length;
   const p = computeProgress(run);
+  const data = collectRun(run);
   const body = '<div class="top"><span class="t">结算</span><span class="r">' + (leftN ? '晚上还差 ' + leftN + ' 题' : '可以收了') + '</span></div>' +
     '<div class="bar" style="margin:0 calc(var(--pad) * -1)"><i style="width:' + p + '%"></i></div>' +
-    '<h1 class="q" style="font-size:22px;margin:20px 0 4px">这一局，你的面板。</h1>' +
-    '<p class="hint" style="margin-top:8px;font-size:13px">六张卡已经按前面的答案填好了。改到你认它为止。</p>' +
+    '<h1 class="q" style="font-size:22px;margin:20px 0 4px">这一天，你写下的。</h1>' +
+    '<p class="hint" style="margin-top:8px;font-size:13px">下面是今天全部的问题和回答。顶上六张卡，是能带走的那一张。</p>' +
     (leftN ? '<div class="row" style="margin-top:16px"><button class="btn ghost block" data-act="go" data-to="/run/' + run.id + '/evening">先去补完晚上（' + leftN + ' 题）</button></div>' : '') +
+    '<h2 class="sech">带走的六张卡<span>可改</span></h2>' +
     '<div class="board">' + slots + '</div>' +
-    '<div class="row" style="margin-top:22px;gap:10px">' +
+    '<div class="row" style="margin-top:16px;gap:10px">' +
     '<button class="btn primary block" data-act="saveimg">保存图片</button></div>' +
-    '<div class="row" style="margin-top:10px;gap:10px">' +
-    '<button class="btn ghost block" data-act="copytext">复制文字</button>' +
+    '<p class="tip">长按图片存进相册，也可以设成锁屏。</p>' +
+    '<h2 class="sech" style="margin-top:36px">今天写下的全部<span>共 ' + data.count + ' 条</span></h2>' +
+    summaryHTML(data, false) +
+    '<h2 class="sech" style="margin-top:36px">带走一份<span>手机上也能打开</span></h2>' +
+    '<div class="row" style="gap:10px;flex-wrap:wrap">' +
+    '<button class="btn sm primary" data-act="exportmd" data-id="' + run.id + '">Markdown</button>' +
+    '<button class="btn sm ghost" data-act="exporttxt" data-id="' + run.id + '">纯文本 TXT</button>' +
+    '<button class="btn sm ghost" data-act="exporthtml" data-id="' + run.id + '">阅读页 HTML</button>' +
+    '<button class="btn sm ghost" data-act="copytext" data-id="' + run.id + '">复制全文</button></div>' +
+    '<p class="tip">推荐 Markdown：纯文本，手机和电脑都能读、能编辑。TXT 适合微信里直接预览，HTML 排版最好、还能打印成 PDF。</p>' +
+    '<div class="row" style="margin-top:22px;gap:10px">' +
     '<button class="btn ghost block" data-act="finish">结束这一天</button></div>' +
-    '<p class="tip">保存后长按图片即可存进相册，也可以设成锁屏。结束这一天之后，它进历史，不再改动。</p>';
+    '<p class="tip">结束之后它进历史，不再改动。</p>';
 
   layout(body, {});
 }
@@ -457,19 +616,15 @@ function viewHistory() {
   } else {
     body += '<div class="list">';
     runs.forEach(r => {
-      const d = new Date(r.startedAt);
-      const ds = (d.getMonth() + 1) + ' 月 ' + d.getDate() + ' 日';
-      const p = computeProgress(r);
-      const enemy = answerText(r, 'S2').trim();
       body += '<button class="li" data-act="go" data-to="/history/' + r.id + '" style="align-items:flex-start">' +
-        '<span class="num" style="padding-top:3px">' + ds + '</span>' +
-        '<span class="txt"><span style="font-size:14px">' + esc(enemy || '（还没有命名敌人）') + '</span>' +
+        '<span class="txt"><span style="font-size:15px">' + dateLabel(r.startedAt) + '</span>' +
         '<span style="display:block;font-size:12px;color:var(--fg3);margin-top:4px">' +
-        (r.status === 'done' ? '已完成' : '进行中') + ' · 已答 ' + answeredCount(r) + ' / 31 · 跨 ' + spansDays(r) + ' 天</span></span>' +
-        '</button>';
+        (r.status === 'done' ? '已完成' : '进行中') + ' · 已答 ' + answeredCount(r) + ' / 31</span></span>' +
+        '<span class="meta">' + timeLabel(r.startedAt) + '　›</span></button>';
     });
     body += '</div>';
     body += '<div style="margin-top:26px"><button class="btn ghost block" data-act="go" data-to="/compare">把这些放一起看</button></div>';
+    body += '<div style="margin-top:10px"><button class="btn ghost block" data-act="exportall">导出全部 · Markdown</button></div>';
   }
   layout(body, { tab: true, active: 'history' });
 }
@@ -477,36 +632,18 @@ function viewHistory() {
 function viewDetail(id) {
   const run = getRun(id);
   if (!run) { go('/history'); return; }
-  const groups = [
-    ['第一幕 · 早晨', MORNING],
-    ['第二幕 · 白天', DAY_IDS],
-    ['第三幕 · 晚上', EVENING]
-  ];
-  let body = '<div class="top"><span class="t">' + runName(run) + '</span>' +
-    '<span class="r">' + new Date(run.startedAt).toLocaleDateString('zh-CN') + '</span></div>';
-
-  groups.forEach(([name, ids]) => {
-    body += '<h2 style="font-size:13px;color:var(--fg3);letter-spacing:.12em;margin:30px 0 4px" class="mono">' + name + '</h2>';
-    if (name.indexOf('白天') > -1) {
-      const es = ((run.day && run.day.entries) || []).slice().sort((a, b) => a.createdAt - b.createdAt);
-      if (!es.length) { body += '<p class="tip">没有记录。</p>'; return; }
-      body += es.map(e => '<div class="frag"><time>' + new Date(e.createdAt).getHours() + ':' +
-        String(new Date(e.createdAt).getMinutes()).padStart(2, '0') + '</time><div>' + esc(e.text) + '</div></div>').join('');
-      return;
-    }
-    let any = false;
-    ids.forEach(qid => {
-      if (!hasAnswer(run, qid)) return;
-      any = true;
-      body += '<div style="padding:14px 0;border-bottom:1px solid var(--line)">' +
-        '<div style="font-size:12.5px;color:var(--fg3);line-height:1.7">' + esc(Q[qid].q.replace(/\{\{V2\}\}/g, '那个身份')) + '</div>' +
-        '<div class="serif" style="font-size:15px;line-height:1.9;margin-top:6px;white-space:pre-wrap">' + esc(answerText(run, qid)) + '</div>' +
-        '</div>';
-    });
-    if (!any) body += '<p class="tip">这一部分当时没有写。</p>';
-  });
-
-  body += '<div class="row" style="margin-top:30px">' +
+  const data = collectRun(run);
+  let body = '<div class="top"><span class="t">' + data.date + '</span>' +
+    '<span class="r">' + data.started + ' 开始 · ' + data.status + '</span></div>' +
+    '<p class="tip" style="margin-top:12px">这一天写下的全部，共 ' + data.count + ' 条。</p>' +
+    summaryHTML(data, true) +
+    '<h2 class="sech" style="margin-top:34px">带走一份</h2>' +
+    '<div class="row" style="gap:10px;flex-wrap:wrap">' +
+    '<button class="btn sm primary" data-act="exportmd" data-id="' + run.id + '">Markdown</button>' +
+    '<button class="btn sm ghost" data-act="exporttxt" data-id="' + run.id + '">纯文本 TXT</button>' +
+    '<button class="btn sm ghost" data-act="exporthtml" data-id="' + run.id + '">阅读页 HTML</button>' +
+    '<button class="btn sm ghost" data-act="copytext" data-id="' + run.id + '">复制全文</button></div>' +
+    '<div class="row" style="margin-top:24px">' +
     '<button class="btn ghost block" data-act="go" data-to="/history">返回</button></div>';
   layout(body, {});
 }
@@ -628,25 +765,9 @@ function downloadText(name, text, type) {
   setTimeout(() => { URL.revokeObjectURL(url); a.remove(); }, 400);
 }
 
-function boardText(run) {
-  const b = run.board;
-  const d = new Date(run.startedAt);
-  const lines = [
-    '一天 · ' + d.getFullYear() + '.' + String(d.getMonth() + 1).padStart(2, '0') + '.' + String(d.getDate()).padStart(2, '0'),
-    '',
-    '赌注｜' + (b.antiVision || '—'),
-    '',
-    '获胜｜' + (b.vision || '—'),
-    '',
-    '主线｜' + (b.oneYear || '—'),
-    '',
-    '首领｜' + (b.oneMonth || '—'),
-    '',
-    '任务｜' + (b.levers || '—'),
-    '',
-    '规则｜' + (b.constraints || '—')
-  ];
-  return lines.join('\n');
+function runFromEl(el) {
+  const parts = location.hash.split('/');
+  return getRun(el.dataset.id) || getRun(parts[2]) || getRun(parts[1]) || activeRun();
 }
 
 function wrapLines(ctx, text, maxW) {
@@ -872,11 +993,29 @@ document.addEventListener('click', e => {
   }
 
   if (act === 'copytext') {
-    const run = getRun(location.hash.split('/')[2]) || activeRun();
+    const run = runFromEl(el);
     if (!run) return;
-    const t = boardText(run);
-    if (navigator.clipboard) navigator.clipboard.writeText(t).then(() => alert('已复制。'), () => alert(t));
+    const t = runMarkdown(run);
+    if (navigator.clipboard) navigator.clipboard.writeText(t).then(() => alert('已复制全文（Markdown）。'), () => alert(t));
     else alert(t);
+    return;
+  }
+
+  if (act === 'exportmd' || act === 'exporttxt' || act === 'exporthtml') {
+    const run = runFromEl(el);
+    if (!run) return;
+    const name = '一天-' + dateLabel(run.startedAt);
+    if (act === 'exportmd') downloadText(name + '.md', runMarkdown(run), 'text/markdown;charset=utf-8');
+    else if (act === 'exporttxt') downloadText(name + '.txt', runPlainText(run), 'text/plain;charset=utf-8');
+    else downloadText(name + '.html', archiveHTML([run]), 'text/html;charset=utf-8');
+    return;
+  }
+
+  if (act === 'exportall') {
+    const runs = db.runs.slice().sort((a, b) => a.startedAt - b.startedAt);
+    if (!runs.length) return;
+    const md = runs.map(runMarkdown).join('\n\n---\n\n');
+    downloadText('一天-全部记录.md', md, 'text/markdown;charset=utf-8');
     return;
   }
 
